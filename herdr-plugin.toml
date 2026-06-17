@@ -9,3 +9,7 @@ platforms = ["linux", "macos"]
 [[events]]
 on = "workspace.created"
 command = ["./bootstrap.sh"]
+
+[[events]]
+on = "workspace.focused"
+command = ["./bootstrap.sh"]

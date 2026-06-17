@@ -5,8 +5,8 @@ from a project-local `worktree_init.toml`.
 
 ## What it does
 
-When Herdr creates a workspace for a linked worktree, the plugin reads
-`<main-repo-root>/worktree_init.toml`, then:
+When Herdr creates or focuses a workspace for a linked worktree, the plugin
+reads `<main-repo-root>/worktree_init.toml`, then:
 
 1. Runs the configured `setup` command inside the new checkout.
 2. Copies the configured `copy` globs from the main repo into the worktree,
@@ -18,6 +18,17 @@ like `.env*`, `.dev.vars`, `.wrangler`, or `public/`.
 
 The plugin is idempotent — it only bootstraps a given checkout once, tracked by
 a marker in Herdr's plugin state directory.
+
+## Why `workspace.focused`?
+
+Herdr's UI worktree creation path does not emit `workspace.created` (only the
+CLI/API path does). The plugin therefore also hooks `workspace.focused`, which
+fires when a new or existing worktree workspace receives focus. This means:
+
+- Worktrees created via the UI are bootstrapped as soon as they are focused.
+- Worktrees created before the plugin was installed are backfilled the first
+time they are focused.
+- Worktrees created via the CLI are bootstrapped on `workspace.created`.
 
 ## Install
 
@@ -49,7 +60,7 @@ If a repo has no `worktree_init.toml`, the hook silently skips it.
 
 ## How it works
 
-1. Herdr emits `workspace.created` whenever a new workspace is opened.
+1. Herdr emits `workspace.created` (CLI/API) or `workspace.focused` (UI/focus).
 2. The plugin receives `HERDR_PLUGIN_CONTEXT_JSON` and checks whether the
    workspace is a linked worktree.
 3. It resolves the main repo root via `git worktree list`.

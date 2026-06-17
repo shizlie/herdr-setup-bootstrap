@@ -2,10 +2,16 @@
 #
 # Herdr plugin: setup-bootstrap
 #
-# Hooks `workspace.created`. If the new workspace is a linked worktree, reads
+# Hooks `workspace.created` and `workspace.focused`. If the workspace is a
+# linked worktree that has not yet been bootstrapped, reads
 # `<main-repo-root>/worktree_init.toml`, runs the configured `setup` command in
 # the new checkout, and copies the configured `copy` globs from the main repo
 # into the worktree.
+#
+# `workspace.created` catches worktrees created via the API/CLI.
+# `workspace.focused` catches worktrees created via the Herdr UI (which does not
+# emit `workspace.created`) and also backfills worktrees that were created
+# before the plugin was installed once they are focused.
 #
 set -euo pipefail
 
@@ -23,15 +29,14 @@ if ! command -v python3 >/dev/null 2>&1; then
     die "python3 is required to parse plugin context JSON"
 fi
 
-# Extract workspace_cwd and whether this is a linked worktree.
-read -r workspace_cwd is_linked_worktree checkout_path < <(python3 -c '
+read -r workspace_cwd is_linked_worktree < <(python3 -c '
 import json, sys
 try:
     ctx = json.load(sys.stdin)
     wt = ctx.get("worktree") or {}
-    print(ctx.get("workspace_cwd", ""), wt.get("is_linked_worktree", False), wt.get("checkout_path", ""))
+    print(ctx.get("workspace_cwd", ""), wt.get("is_linked_worktree", False))
 except Exception:
-    print("", "False", "")
+    print("", "False")
 ' <<< "$HERDR_PLUGIN_CONTEXT_JSON")
 
 if [ "$is_linked_worktree" != "True" ]; then
