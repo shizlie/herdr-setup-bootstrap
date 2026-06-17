@@ -1,6 +1,6 @@
 id = "setup-bootstrap"
 name = "Setup Bootstrap"
-version = "0.1.1"
+version = "0.1.2"
 description = "Bootstrap new Herdr worktree checkouts from worktree_init.toml."
 min_herdr_version = "0.7.0"
 
