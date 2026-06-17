@@ -1,0 +1,69 @@
+# herdr-setup-bootstrap
+
+A [Herdr](https://herdr.sh) plugin that bootstraps every newly created worktree
+from a project-local `worktree_init.toml`.
+
+## What it does
+
+When you create a new Herdr worktree, the plugin reads
+`<main-repo-root>/worktree_init.toml`, then:
+
+1. Runs the configured `setup` command inside the new checkout.
+2. Copies the configured `copy` globs from the main repo into the worktree,
+   preserving each path's location relative to the repo root.
+
+This is useful for replicating per-workspace bootstrap steps that git can't
+carry across worktrees: installing dependencies and seeding gitignored locals
+like `.env*`, `.dev.vars`, `.wrangler`, or `public/`.
+
+## Install
+
+```bash
+herdr plugin install shizlie/herdr-setup-bootstrap
+```
+
+No restart required. To remove:
+
+```bash
+herdr plugin uninstall setup-bootstrap
+```
+
+## Project config: `worktree_init.toml`
+
+Create a `worktree_init.toml` at the root of any repo you want bootstrapped:
+
+```toml
+# Shell command run inside the new worktree checkout.
+setup = "cd \"project-v3\" && bun install"
+
+# Newline-separated glob patterns. Paths with `/` are matched relative to the
+# repo root; bare names are matched at any depth. Files and directories are
+# copied while preserving their relative path.
+copy = ".env*\n.dev.vars\n.dev.vars.production\nlogo-wide.png\n.wrangler\npublic"
+```
+
+If a repo has no `worktree_init.toml`, the hook silently skips it.
+
+## How it works
+
+1. Herdr emits `worktree.created` after a new worktree checkout succeeds.
+2. The plugin receives `HERDR_PLUGIN_CONTEXT_JSON`, which contains
+   `workspace_cwd` = the new worktree checkout path.
+3. It resolves the main repo root via `git worktree list`.
+4. It reads `worktree_init.toml` from the main repo root.
+5. It runs `setup` and copies the `copy` globs.
+
+## Requirements
+
+- `python3` to parse the plugin context JSON.
+- `rsync` for copying directories efficiently.
+
+## Logs
+
+```bash
+herdr plugin log list --plugin setup-bootstrap
+```
+
+## License
+
+MIT
