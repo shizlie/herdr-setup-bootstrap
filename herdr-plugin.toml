@@ -1,11 +1,11 @@
 id = "setup-bootstrap"
 name = "Setup Bootstrap"
-version = "0.1.0"
-description = "Run ./setup.sh in every newly created worktree checkout if the repo provides one."
+version = "0.1.1"
+description = "Bootstrap new Herdr worktree checkouts from worktree_init.toml."
 min_herdr_version = "0.7.0"
 
 platforms = ["linux", "macos"]
 
 [[events]]
-on = "worktree.created"
+on = "workspace.created"
 command = ["./bootstrap.sh"]

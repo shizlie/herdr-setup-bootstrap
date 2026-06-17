@@ -2,12 +2,10 @@
 #
 # Herdr plugin: setup-bootstrap
 #
-# Hooks `worktree.created`. Reads `<main-repo-root>/worktree_init.toml` and:
-#   1. Runs the configured `setup` command inside the new worktree checkout.
-#   2. Copies the configured `copy` globs from the main repo into the worktree,
-#      preserving each path's location relative to the repo root.
-#
-# This replaces the per-project setup.sh with a single shared Herdr plugin.
+# Hooks `workspace.created`. If the new workspace is a linked worktree, reads
+# `<main-repo-root>/worktree_init.toml`, runs the configured `setup` command in
+# the new checkout, and copies the configured `copy` globs from the main repo
+# into the worktree.
 #
 set -euo pipefail
 
@@ -15,9 +13,9 @@ log()  { printf '[setup-bootstrap] %s\n' "$*"; }
 warn() { printf '[setup-bootstrap] WARN: %s\n' "$*" >&2; }
 die()  { printf '[setup-bootstrap] ERROR: %s\n' "$*" >&2; exit 1; }
 
-# ── 1. Parse plugin context JSON for the new worktree checkout path ──────────
+# ── 1. Parse plugin context JSON ─────────────────────────────────────────────
 if [ -z "${HERDR_PLUGIN_CONTEXT_JSON:-}" ]; then
-    warn "HERDR_PLUGIN_CONTEXT_JSON is empty; cannot determine worktree path"
+    warn "HERDR_PLUGIN_CONTEXT_JSON is empty; cannot determine workspace"
     exit 0
 fi
 
@@ -25,14 +23,21 @@ if ! command -v python3 >/dev/null 2>&1; then
     die "python3 is required to parse plugin context JSON"
 fi
 
-workspace_cwd=$(python3 -c '
+# Extract workspace_cwd and whether this is a linked worktree.
+read -r workspace_cwd is_linked_worktree checkout_path < <(python3 -c '
 import json, sys
 try:
     ctx = json.load(sys.stdin)
-    print(ctx.get("workspace_cwd", ""))
+    wt = ctx.get("worktree") or {}
+    print(ctx.get("workspace_cwd", ""), wt.get("is_linked_worktree", False), wt.get("checkout_path", ""))
 except Exception:
-    print("")
+    print("", "False", "")
 ' <<< "$HERDR_PLUGIN_CONTEXT_JSON")
+
+if [ "$is_linked_worktree" != "True" ]; then
+    log "workspace is not a linked worktree — skipping"
+    exit 0
+fi
 
 if [ -z "$workspace_cwd" ]; then
     warn "workspace_cwd missing from plugin context"
@@ -44,7 +49,17 @@ if [ ! -d "$workspace_cwd" ]; then
     exit 0
 fi
 
-# ── 2. Resolve the main repo root (first entry of git worktree list) ─────────
+# ── 2. Idempotency: skip if we already bootstrapped this checkout ────────────
+if [ -n "${HERDR_PLUGIN_STATE_DIR:-}" ]; then
+    marker_dir="$HERDR_PLUGIN_STATE_DIR/done"
+    marker="$marker_dir/$(printf '%s' "$workspace_cwd" | shasum -a 256 | cut -d' ' -f1)"
+    if [ -f "$marker" ]; then
+        log "already bootstrapped $workspace_cwd — skipping"
+        exit 0
+    fi
+fi
+
+# ── 3. Resolve the main repo root (first entry of git worktree list) ─────────
 main_repo_root=$(git -C "$workspace_cwd" worktree list --porcelain 2>/dev/null \
     | awk '/^worktree /{print $2; exit}') || true
 
@@ -61,7 +76,7 @@ if [ "$main_repo_root" = "$workspace_cwd" ]; then
     exit 0
 fi
 
-# ── 3. Load worktree_init.toml from the main repo root ───────────────────────
+# ── 4. Load worktree_init.toml from the main repo root ───────────────────────
 config_file="$main_repo_root/worktree_init.toml"
 if [ ! -f "$config_file" ]; then
     log "no worktree_init.toml in $main_repo_root — skipping"
@@ -84,7 +99,7 @@ toml_string() {
 setup_cmd=$(toml_string setup "$config_file" || true)
 copy_globs=$(toml_string copy "$config_file" || true)
 
-# ── 4. Run setup command ─────────────────────────────────────────────────────
+# ── 5. Run setup command ─────────────────────────────────────────────────────
 if [ -n "$setup_cmd" ]; then
     log "running setup: $setup_cmd"
     (cd "$workspace_cwd" && /bin/sh -c "$setup_cmd") || die "setup command failed"
@@ -92,55 +107,58 @@ else
     log "no setup command configured"
 fi
 
-# ── 5. Copy globs from main repo into the worktree ───────────────────────────
+# ── 6. Copy globs from main repo into the worktree ───────────────────────────
 if [ -z "$copy_globs" ]; then
     log "no copy globs configured"
-    exit 0
-fi
+else
+    copy_one() {
+        local src="$1" rel dest
+        rel="${src#"$main_repo_root"/}"
+        dest="$workspace_cwd/$rel"
+        [ "$src" = "$dest" ] && return 0
+        mkdir -p "$(dirname "$dest")"
+        if [ -d "$src" ]; then
+            mkdir -p "$dest"
+            rsync -a "$src"/ "$dest"/
+        else
+            rsync -a "$src" "$dest"
+        fi
+        log "copied: $rel"
+    }
 
-copy_one() {
-    local src="$1" rel dest
-    rel="${src#"$main_repo_root"/}"
-    dest="$workspace_cwd/$rel"
-    [ "$src" = "$dest" ] && return 0
-    mkdir -p "$(dirname "$dest")"
-    if [ -d "$src" ]; then
-        mkdir -p "$dest"
-        rsync -a "$src"/ "$dest"/
-    else
-        rsync -a "$src" "$dest"
-    fi
-    log "copied: $rel"
-}
+    copied=0
+    while IFS= read -r pattern; do
+        pattern="${pattern#"${pattern%%[![:space:]]*}"}"   # ltrim
+        pattern="${pattern%"${pattern##*[![:space:]]}"}"   # rtrim
+        [ -z "$pattern" ] && continue
 
-copied=0
-while IFS= read -r pattern; do
-    pattern="${pattern#"${pattern%%[![:space:]]*}"}"   # ltrim
-    pattern="${pattern%"${pattern##*[![:space:]]}"}"   # rtrim
-    [ -z "$pattern" ] && continue
-
-    matched=0
-    if [[ "$pattern" == */* ]]; then
-        # Anchored pattern: expand relative to the repo root.
-        shopt -s nullglob dotglob
-        for src in "$main_repo_root"/$pattern; do
-            [ -e "$src" ] || continue
-            copy_one "$src"; matched=1; copied=$((copied + 1))
-        done
-        shopt -u nullglob dotglob
-    else
-        # Bare pattern: match by name at ANY depth, pruning vcs/deps.
-        while IFS= read -r src; do
-            [ -n "$src" ] || continue
-            copy_one "$src"; matched=1; copied=$((copied + 1))
-        done < <(find "$main_repo_root" \
-            -name .git -prune -o \
-            -name node_modules -prune -o \
-            -name "$pattern" -print)
-    fi
-    [ "$matched" -eq 0 ] && warn "no match for glob: $pattern"
-done <<EOF
+        matched=0
+        if [[ "$pattern" == */* ]]; then
+            shopt -s nullglob dotglob
+            for src in "$main_repo_root"/$pattern; do
+                [ -e "$src" ] || continue
+                copy_one "$src"; matched=1; copied=$((copied + 1))
+            done
+            shopt -u nullglob dotglob
+        else
+            while IFS= read -r src; do
+                [ -n "$src" ] || continue
+                copy_one "$src"; matched=1; copied=$((copied + 1))
+            done < <(find "$main_repo_root" \
+                -name .git -prune -o \
+                -name node_modules -prune -o \
+                -name "$pattern" -print)
+        fi
+        [ "$matched" -eq 0 ] && warn "no match for glob: $pattern"
+    done <<EOF
 $copy_globs
 EOF
 
-log "done — $copied path(s) copied"
+    log "done — $copied path(s) copied"
+fi
+
+# ── 7. Mark this checkout as bootstrapped ────────────────────────────────────
+if [ -n "${HERDR_PLUGIN_STATE_DIR:-}" ]; then
+    mkdir -p "$marker_dir"
+    date > "$marker"
+fi

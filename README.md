@@ -5,7 +5,7 @@ from a project-local `worktree_init.toml`.
 
 ## What it does
 
-When you create a new Herdr worktree, the plugin reads
+When Herdr creates a workspace for a linked worktree, the plugin reads
 `<main-repo-root>/worktree_init.toml`, then:
 
 1. Runs the configured `setup` command inside the new checkout.
@@ -15,6 +15,9 @@ When you create a new Herdr worktree, the plugin reads
 This is useful for replicating per-workspace bootstrap steps that git can't
 carry across worktrees: installing dependencies and seeding gitignored locals
 like `.env*`, `.dev.vars`, `.wrangler`, or `public/`.
+
+The plugin is idempotent — it only bootstraps a given checkout once, tracked by
+a marker in Herdr's plugin state directory.
 
 ## Install
 
@@ -46,12 +49,14 @@ If a repo has no `worktree_init.toml`, the hook silently skips it.
 
 ## How it works
 
-1. Herdr emits `worktree.created` after a new worktree checkout succeeds.
-2. The plugin receives `HERDR_PLUGIN_CONTEXT_JSON`, which contains
-   `workspace_cwd` = the new worktree checkout path.
+1. Herdr emits `workspace.created` whenever a new workspace is opened.
+2. The plugin receives `HERDR_PLUGIN_CONTEXT_JSON` and checks whether the
+   workspace is a linked worktree.
 3. It resolves the main repo root via `git worktree list`.
 4. It reads `worktree_init.toml` from the main repo root.
 5. It runs `setup` and copies the `copy` globs.
+6. It writes a marker to `HERDR_PLUGIN_STATE_DIR/done/` so the same checkout is
+   not bootstrapped again.
 
 ## Requirements
 
